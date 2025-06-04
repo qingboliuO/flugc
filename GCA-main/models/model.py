@@ -150,7 +150,7 @@ class GCNDecoder(torch.nn.Module):
         edge_x = self.relu(edge_x)
         edge_x = self.dropout1(edge_x)
         # edge_x += identity  # 添加原始输入特征
-        edge_x = self.NodeFeatureSelfAttention(edge_x)
+        # edge_x = self.NodeFeatureSelfAttention(edge_x)
         # edge_x = self.channel_attention(edge_x)
 
 
