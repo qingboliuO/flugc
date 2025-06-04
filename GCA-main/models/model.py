@@ -12,6 +12,7 @@ import math
 #     random.seed(seed)
 #     torch.backends.cudnn.deterministic = True  # 确保每次返回的卷积算法是确定的，如果这个设置为True，可能会使得运算效率降低
 #     torch.backends.cudnn.benchmark = False
+
 class ChannelAttention(nn.Module):#性能提升较大
     def __init__(self, num_channels, reduction_ratio=4):#2和4好像差不多，4稍微好一点
         super(ChannelAttention, self).__init__()
@@ -54,30 +55,7 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         return x + self.pe
 
-# class NodeFeatureSelfAttention(nn.Module):
-#     def __init__(self, feature_dim):
-#         super(NodeFeatureSelfAttention, self).__init__()
-#         self.query = nn.Linear(feature_dim, feature_dim)
-#         self.key = nn.Linear(feature_dim, feature_dim)
-#         self.value = nn.Linear(feature_dim, feature_dim)
-#         self.position_encoding = PositionalEncoding(feature_dim)
-#
-#     def forward(self, x):
-#         x = self.position_encoding(x)
-#         attention_outputs = []
-#         for node_features in x:
-#             Q = self.query(node_features.unsqueeze(0))
-#             K = self.key(node_features.unsqueeze(0))
-#             V = self.value(node_features.unsqueeze(0))
-#
-#             attention_scores = torch.matmul(Q, K.transpose(-2, -1))
-#             attention_scores = F.softmax(attention_scores, dim=-1)
-#
-#             attention_output = torch.matmul(attention_scores, V)
-#             attention_outputs.append(attention_output.squeeze(0))
-#
-#         attention_outputs = torch.stack(attention_outputs, dim=0)
-#         return attention_outputs
+
 class NodeFeatureSelfAttention(nn.Module):
     def __init__(self, feature_dim):
         super(NodeFeatureSelfAttention, self).__init__()
@@ -106,6 +84,17 @@ class NodeFeatureSelfAttention(nn.Module):
         # Compute attention output
         attention_output = torch.matmul(attention_scores, V.unsqueeze(2)).squeeze(2)  # Shape: [num_nodes, feature_dim]
         return attention_output
+class DyT(nn.Module):
+    def __init__(self, num_features, alpha_init_value=0.5):
+        super().__init__()
+        self.alpha = nn.Parameter(torch.ones(1) * alpha_init_value)
+        self.weight = nn.Parameter(torch.ones(num_features))
+        self.bias = nn.Parameter(torch.zeros(num_features))
+
+    def forward(self, x):
+        x = torch.tanh(self.alpha * x)
+        return x * self.weight + self.bias
+
 class GCNDecoder(torch.nn.Module):
     def __init__(self,out_feats):# out_feats，这是解码器将处理的输入特征的维度。
         super().__init__()
@@ -116,14 +105,14 @@ class GCNDecoder(torch.nn.Module):
         # self.reduce_dim2 = nn.Linear(512, 2 * out_feats)
         self.fc1 = nn.Linear(2 * out_feats,  2 * out_feats)#输入的特征维度是两倍的 out_feats，
         # 相当于输入起始节点和目标节点的聚合后的嵌入向量，预测这两个抗原的距离
-        self.bn1 = nn.BatchNorm1d( 2 * out_feats)
+        self.bn1 = DyT(2 * out_feats)
         # 通常涉及两个节点（源节点和目标节点）的特征
         self.fc2 = nn.Linear(2 * out_feats, 2 * out_feats)
-        self.bn2 = nn.BatchNorm1d(2 * out_feats)
+        self.bn2 = DyT(2 * out_feats)
         self.fc3 = nn.Linear(out_feats, out_feats)
-        self.bn3 = nn.BatchNorm1d(out_feats)
+        self.bn3 = DyT(out_feats)
         self.fc4 = nn.Linear(2 * out_feats, 2 * out_feats)
-        self.bn4 = nn.BatchNorm1d(2 * out_feats)
+        self.bn4 = DyT(2 * out_feats)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(0.4)#随机丢弃10%的特征
         self.final = nn.Linear(2*out_feats, 1)
@@ -132,13 +121,13 @@ class GCNDecoder(torch.nn.Module):
         self.NodeFeatureSelfAttention = NodeFeatureSelfAttention(2 * out_feats)
         self.l1_lambda = 0.001  # L1正则化系数
         self.reduce_dim1 = nn.Linear(2 * out_feats, out_feats)
-        self.reduce_bn1 = nn.BatchNorm1d(out_feats)
+        self.reduce_bn1 = DyT(out_feats)
         self.reduce_dim2 = nn.Linear(out_feats, out_feats // 2)
-        self.reduce_bn2 = nn.BatchNorm1d(out_feats // 2)
+        self.reduce_bn2 = DyT(out_feats // 2)
         self.reduce_dim3 = nn.Linear(out_feats // 2, 1)
-        # self.reduce_bn3 = nn.BatchNorm1d(out_feats // 4)
+        # self.reduce_bn3 = DyT(out_feats // 4)
         self.reduce_dim4 = nn.Linear(out_feats // 4, out_feats // 8)
-        self.reduce_bn4 = nn.BatchNorm1d(out_feats // 8)
+        self.reduce_bn4 = DyT(out_feats // 8)
         self.reduce_dim5 = nn.Linear(out_feats // 8, 1)
         self.relu = nn.ReLU()
         self.dropout1 = nn.Dropout(0.4)
@@ -150,7 +139,7 @@ class GCNDecoder(torch.nn.Module):
         x_src = x[edge_index[0]]#从 x 中提取所有边的源节点的特征
         x_dst = x[edge_index[1]]#从 x 中提取所有边的目标节点的特征
         edge_x = torch.cat((x_src, x_dst), dim=1)#将源节点和目标节点的特征沿特征维度拼接，为每条边创建一个联合特征向量。
-        print("edge_x shape before fc4:", edge_x.shape)
+        # print("edge_x shape before fc4:", edge_x.shape)
         #edge_x的形状是边数量*2feature维度=边数量*1132
         # 多次降维
         # identity = edge_x  # 保存原始特征作为残差连接的一部分
@@ -161,7 +150,7 @@ class GCNDecoder(torch.nn.Module):
         edge_x = self.relu(edge_x)
         edge_x = self.dropout1(edge_x)
         # edge_x += identity  # 添加原始输入特征
-        # edge_x = self.NodeFeatureSelfAttention(edge_x)
+        edge_x = self.NodeFeatureSelfAttention(edge_x)
         # edge_x = self.channel_attention(edge_x)
 
 
@@ -217,5 +206,7 @@ class GCNDecoder(torch.nn.Module):
         out = torch.flatten(out)#将输出展平。如果输出包括多个边，这确保输出是一个一维数组，每个元素对应一条边的结果。
 
         return out
+
+
 
 
